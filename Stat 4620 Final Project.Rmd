@@ -12,7 +12,7 @@ set.seed (1)
 
 # Install packages
 knitr::opts_chunk$set(echo = TRUE)
-packages <- c("tinytex", "haven", "tidyverse", "stargazer", "knitr", "glmnet", "pls", "mltools", "data.table", "readr", "corrplot")
+packages <- c("tinytex", "haven", "tidyverse", "stargazer", "knitr", "glmnet", "pls", "mltools", "data.table", "readr", "corrplot", "lubridate")
               
 for (i in packages){
   if (!require(i, character.only = TRUE))
@@ -23,7 +23,7 @@ for (i in packages){
 }
 ```
 
-The data set that we will be working with in this final project is called the Ames Iowa housing data set. This data set contains 2,909 observations across 81 variables, with each row representing a single house in Ames, Iowa. There are 1461 observations in the training data set, and 1448 observations in the testing data set. The 81 variables contain various measures and observations about the size, price, location, quality, condition, features, and value of each home and the plot of land it is on. This includes measures related to each home’s garage, roof, driveway, total area, bathrooms, bedrooms, and more.
+The data set that we will be working with in this final project is called the Ames Iowa housing data set. This data set contains 2,909 observations across 81 variables, with each row representing a single house in Ames, Iowa. There are 1461 observations in the training data set, and 1448 observations in the testing data set. The 81 variables can be split up into 80 predictors and one response: SalePrice. The predictors contain various measures and observations about the size, price, location, quality, condition, features, and value of each home and the plot of land it is on. This includes measures related to each home’s garage, roof, driveway, total area, bathrooms, bedrooms, and more.
 
 ```{r}
 # Import data
@@ -31,15 +31,22 @@ train <- read_csv("~/Downloads/Ames/train.csv")
 test <- read_csv("~/Downloads/Ames/test_new.csv")
 ```
 
-#### EXPLORATORY DATA ANALYSIS ####
+#### EDA AND DATA CLEANING####
 
 Due to the nature of a data set with many predictors, our group made the decision to perform an initial exploratory data analysis solely based on the data_description document, which provides a description of each of the 76 variables in the Ames data set. This involved making predictions about the data and omitting columns based on their meaning.
 
 Upon completing our initial variable selection by hand, we moved onto performing the rest of our exploratory data analysis within R. This consisted of examining the distributions of numeric variables, examining which of the quantitative variables potentially required a transformation, and which categorical variables could be collapsed.
 
-CONTINUE
+For our one continuous response variable, SalePrice, let's look at a histogram of the distribution:
 
-#### DATA CLEANING ####
+```{r}
+hist(train$SalePrice) #regular histogram
+hist(log(train$SalePrice)) #log-transformed
+train$SalePrice <- log(train$SalePrice)
+test$SalePrice <- log(test$SalePrice)
+```
+
+Upon looking at the log-transformation, this is clearly the right choice for our response. The regular distribution is right skewed, a natural phenomenon in income, wealth, and house property values. The log-transformed histogram is normally distributed, making it an obvious choice.
 
 Of the 80 predictor columns in the data set, many seem related to each other. For example, there are 7 columns related to garages, including type, year built, finish, cars, area, quality, and condition. We chose to remove (?) variables based on this perceived correlation to other variables. Removing GarageCars was necessary as it measures the size of the garage in car capacity whereas GarageArea meausures the size of the garage in square feet. Keeping both variables would confound our results and could weaken the predictive strength of our final model. Let's look at each variable that has many categories:
 
@@ -73,9 +80,38 @@ for (stri in c("Garage", "Pool", "Area", "SF", "Sale", "Bath", "Bsmt", "Lot")) {
 }
 ```
 
-Based on the plots above, there aren't too many immediate issues. The correlation between total basement area and first floor area is relatively high, but some robust models should be able to handle this while making use of the additional lot information.
+Based on the plots above, there aren't too many immediate issues. The correlation between total basement area and first floor area is relatively high, but some robust models should be able to handle this while making use of the additional lot information. To continue our data analysis, our group hypothesized that the timing of house sale had a large influence on the final SalePrice. Note the date range of our data:
 
-Now we will look at which columns have lots of NA values, by proportion of the entire column. We can see that the pool columns have almost all values in the NA category.
+```{r}
+max <- max(train$YrSold)
+min <- min(train$YrSold)
+print(paste(min, max, sep="-"))
+```
+
+This is around the time of the Great Recession and the housing market crash. Therefore, to achieve more intuitive results we will combine our YrSold and MoSold variables so that we can look at time on a linear scale instead of having separate Year and Month factors.
+
+```{r}
+#joint variable of month and year
+train$YearMonth <- ym(paste(as.character(train$YrSold), as.character(train$MoSold), sep = "-"))
+test$YearMonth <- ym(paste(as.character(test$YrSold), as.character(test$MoSold), sep = "-"))
+
+#plotting sales by month
+ggplot(train, aes(x=YearMonth)) + geom_histogram(binwidth=32, colour="white")
+train %>%
+  group_by(YearMonth) %>%
+  select(SalePrice, YearMonth) %>%
+  summarise(mean = mean(SalePrice)) %>%
+  ggplot(mapping = aes(YearMonth, mean)) + geom_line() +
+  xlab("Time") + ylab("Average Price Per Month")
+
+#removing joint variable
+train <- train %>% select(-YearMonth)
+test <- test %>% select(-YearMonth)
+```
+
+While the plot of Mean Sale Price (log SalePrice) per month is rather uninterpretable, we can look at the number of sales per month throughout our date range. This seems to have a cyclical trend, where more houses are sold in the summertime. For Mean Sale Price, it appears this decreases slightly over time. Therefore, we could probably use YrSold and MoSold separately for better results and combining them on a linear scale.
+
+Now we will look at which columns have lots of NA values by proportion of the entire column. We can see that the pool columns have almost all values in the NA category.
 
 ```{r}
 #### COUNTING NA VALUES ####
