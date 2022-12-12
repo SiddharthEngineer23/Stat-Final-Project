@@ -46,9 +46,9 @@ train$SalePrice <- log(train$SalePrice)
 test$SalePrice <- log(test$SalePrice)
 ```
 
-Upon looking at the log-transformation, this is clearly the right choice for our response. The regular distribution is right skewed, a natural phenomenon in income, wealth, and house property values. The log-transformed histogram is normally distributed, making it an obvious choice.
+We will be performing a log-transformation to our response variable. The regular distribution is right skewed, a natural phenomenon in income, wealth, and house property values. The log-transformed histogram is normally distributed, thus making it an obvious choice.
 
-Of the 80 predictor columns in the data set, many seem related to each other. For example, there are 7 columns related to garages, including type, year built, finish, cars, area, quality, and condition. We chose to remove (?) variables based on this perceived correlation to other variables. Removing GarageCars was necessary as it measures the size of the garage in car capacity whereas GarageArea meausures the size of the garage in square feet. Keeping both variables would confound our results and could weaken the predictive strength of our final model. Let's look at each variable that has many categories:
+Of the 80 predictor columns in the data set, many seem related to each other. For example, there are 7 columns related to garages, including type, year built, finish, cars, area, quality, and condition. Removing GarageCars was necessary as it measures the size of the garage in car capacity whereas GarageArea meausures the size of the garage in square feet. Keeping both variables would confound our results and could weaken the predictive strength of our final model. Let's look at each variable that has many categories:
 
 ```{r}
 df <- data.frame(matrix(ncol=3))
@@ -187,7 +187,7 @@ collapseFactors <- function(factors) {
 }
 ```
 
-Now that we have our helper methods defined, we will create the main method for cleaning our data. We'll throw out columns like street, ID, Condition1 and Condition2, MiscFeature, and the pool columns, among others. We then clean up our categorical data into factors using the onehot() function. This transforms each of the categorical variables into individual binary variables across each of their categories, expanding our initial variable count of (?) to (?). 
+Now that we have our helper methods defined, we will create the main method for cleaning our data. We'll throw out columns like street, ID, Condition1 and Condition2, MiscFeature, and the pool columns, among others. We then expand our categorical data into factors using the onehot() function. This transforms each of the categorical variables into individual binary variables across each of their categories, expanding our initial variable count of 80 to 185. 
 
 ```{r}
 #### CLEANING DATA ####
@@ -219,7 +219,7 @@ cleanData <- function(data) {
 }
 ```
 
-In the end, we removed (?) categorical variables based on the distribution of observations across their categories. If a categorical variable had over 90% (?) of its observations in a single category, we made the decision to remove it from our analysis, as it would not provide any valuable additional information for SalePrice prediction. Next, we must split our testing and training data into our x and y values.
+In the end, we removed 15 categorical variables based on the distribution of observations across their categories. If a categorical variable had over 90% (?) of its observations in a single category, we made the decision to remove it from our analysis, as it would not provide any valuable additional information for SalePrice prediction. Next, we must split our testing and training data into our x and y values.
 
 ```{r}
 #### CREATE TESTING, TRAINING DATA ####
