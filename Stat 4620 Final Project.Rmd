@@ -1,0 +1,311 @@
+---
+title: "STAT 4620 Final Project"
+author: "Eric Snell, Melina Raglin, Ryan Mark, Noah Teller, and Siddharth Engineer"
+date: '2022-12-12'
+output: html_document
+---
+
+#### SETUP ####
+```{r setup, include=FALSE}
+# Set seed to avoid PRNG issues
+set.seed (1)
+
+# Install packages
+knitr::opts_chunk$set(echo = TRUE)
+packages <- c("tinytex", "haven", "tidyverse", "stargazer", "knitr", "glmnet", "pls", "mltools", "data.table", "readr", "corrplot")
+              
+for (i in packages){
+  if (!require(i, character.only = TRUE))
+  {
+    install.packages(i)
+    library(i, character.only = TRUE)
+  }
+}
+```
+
+The data set that we will be working with in this final project is called the Ames Iowa housing data set. This data set contains 2,909 observations across 81 variables, with each row representing a single house in Ames, Iowa. There are 1461 observations in the training data set, and 1448 observations in the testing data set. The 81 variables contain various measures and observations about the size, price, location, quality, condition, features, and value of each home and the plot of land it is on. This includes measures related to each home’s garage, roof, driveway, total area, bathrooms, bedrooms, and more.
+
+```{r}
+# Import data
+train <- read_csv("~/Downloads/Ames/train.csv")
+test <- read_csv("~/Downloads/Ames/test_new.csv")
+```
+
+#### EXPLORATORY DATA ANALYSIS ####
+
+Due to the nature of a data set with many predictors, our group made the decision to perform an initial exploratory data analysis solely based on the data_description document, which provides a description of each of the 76 variables in the Ames data set. This involved making predictions about the data and omitting columns based on their meaning.
+
+Upon completing our initial variable selection by hand, we moved onto performing the rest of our exploratory data analysis within R. This consisted of examining the distributions of numeric variables, examining which of the quantitative variables potentially required a transformation, and which categorical variables could be collapsed.
+
+CONTINUE
+
+#### DATA CLEANING ####
+
+Of the 80 predictor columns in the data set, many seem related to each other. For example, there are 7 columns related to garages, including type, year built, finish, cars, area, quality, and condition. We chose to remove (?) variables based on this perceived correlation to other variables. Removing GarageCars was necessary as it measures the size of the garage in car capacity whereas GarageArea meausures the size of the garage in square feet. Keeping both variables would confound our results and could weaken the predictive strength of our final model. Let's look at each variable that has many categories:
+
+```{r}
+df <- data.frame(matrix(ncol=3))
+colnames(df) <- c("Term", "Count", "Values")
+
+# Create a data frame with columns (Term, Count, Values)
+# where [values] is a list of all variables that contain the term
+for (stri in c("Garage", "Pool", "Area", "SF", "Sale", "Bath", "Bsmt", "Lot")) {
+  values <- tibble(colnames(train) %>% tibble(name = .) %>% filter(name %>% str_detect(stri)))
+  count <- values %>% dim()
+  df <- rbind(df, list(stri, count[1], values))
+}
+
+# Print out individual tables for each term and the associated variables
+for (row in 2:nrow(df)) {
+  stargazer(df[[3]][row], title=paste(df[[1]][row], ": ", df[[2]][row]), type='text')
+}
+```
+
+For each of the categories above, let's look at correlations between their variables 
+
+```{r}
+# Make correlation plots for sets of columns that contain the key term
+for (stri in c("Garage", "Pool", "Area", "SF", "Sale", "Bath", "Bsmt", "Lot")) {
+  match <- drop_na(dplyr::select(train, contains(stri) & is.numeric))
+  if(dim(match)[2] > 1){
+    corrplot(cor(match))
+  }
+}
+```
+
+Based on the plots above, there aren't too many immediate issues. The correlation between total basement area and first floor area is relatively high, but some robust models should be able to handle this while making use of the additional lot information.
+
+Now we will look at which columns have lots of NA values, by proportion of the entire column. We can see that the pool columns have almost all values in the NA category.
+
+```{r}
+#### COUNTING NA VALUES ####
+na_count <-sapply(train, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(PctNA = round((na_count / length(train$SalePrice)), 3)) %>% filter(PctNA > 0) %>% arrange(desc(PctNA))
+na_count
+```
+
+For categorical variables, we wish to reclassify NA values to "None". Look at BsmtQual (Basement Quality), for example, where NA means that there is no basement. This category should not be omitted, but instead reclassified. For numeric variables, there are some cases where we wish to redefine NA to 0.
+
+The next issue to take into account is our categorical variables. If there's a factor that only has a few values, we want to identify it. Manually looking at the count of each factor for each categorical variable is a lot of work, so we'll define a method that iterates through the rows and prints out the column, factor label, and count if it is less than 50.
+
+```{r}
+#### COUNTING FACTORS ####
+inspectFactors <- function(factors) {
+  library(forcats)
+  # Iterate through each column
+  for (column in colnames(factors)) {
+    # Iterate through each factor in each column
+    for (counts in fct_count(factors[[column]])[2]) {
+      j = 1
+      # Iterate through the counts of each factor
+      for(count in counts) {
+        # If there are insufficient examples, print the factor name and the count
+        val_str <- fct_count(factors[[column]])[[1]][j]
+        if(count < 50 & column != "Neighborhood") {
+          print(paste(column, ":", val_str, ":", count))
+        }
+        j = j + 1
+      }
+    }
+  }
+}
+```
+
+We'll also define a method that collapses these low-count factors into fewer factors. For example, we want to translate "excellent" and "good" into above average, "typical" into average, and "fair" and "poor" into below average. We'll also combine other factors in a fairly manual way. For example, we want all "irregular" lot shapes to be in one category, not in 3 separate ones. We'll do the same thing for types of 1.5 and 2.5 story homes, respectively, and we'll implement "other" categories for things like roof type and exterior type. By doing this, we reduce the number of factors we have to deal with and have smaller standard errors. 
+
+```{r}
+#### COLLAPSING FACTORS ####
+collapseFactors <- function(factors) {
+  # Collapse into above average, average, and below average
+  factors$BsmtQual <- fct_collapse(factors$BsmtQual, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$BsmtCond <- fct_collapse(factors$BsmtCond, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$HeatingQC <- fct_collapse(factors$HeatingQC, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$ExterQual <- fct_collapse(factors$ExterQual, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$ExterCond <- fct_collapse(factors$ExterCond, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$GarageQual <- fct_collapse(factors$GarageQual, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$GarageCond <- fct_collapse(factors$GarageCond, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$FireplaceQu <- fct_collapse(factors$FireplaceQu, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po"))
+  factors$KitchenQual <- fct_collapse(factors$KitchenQual, AboveAvg = c("Ex", "Gd"), Avg = "TA", BelowAvg = c("Fa", "Po", NA, "NA", "NONE"))
+  
+  # Collapse into normal categories
+  factors$LotShape <- fct_collapse(factors$LotShape, IR = c("IR1", "IR2", "IR3"))
+  factors$LotConfig <- fct_collapse(factors$LotConfig, FR2_3 = c("FR2", "FR3"))
+  factors$HouseStyle <- fct_collapse(factors$HouseStyle, "1.5" = c("1.5Unf", "1.5Fin"), "2.5" = c("2.5Unf", "2.5Fin"), split = c("SFoyer", "SLvl"))
+  factors$Functional <- fct_collapse(factors$Functional, "Minor" = c("Min1", "Min2", "Mod"), "Major" = c("Maj1", "Maj2", "Sev", "NONE"))
+  
+  # Collapse into "Other" category
+  factors$RoofStyle <- fct_collapse(factors$RoofStyle, "Other" = c("Flat", "Gambrel", "Mansard", "Shed"))
+  factors$Exterior1st <- fct_collapse(factors$Exterior1st, "Other" = c("AsbShng", "AsphShn", "BrkComm", "CBlock", "ImStucc", "Stone", "Stucco", "WdShing"))
+  factors$Exterior2nd <- fct_collapse(factors$Exterior2nd, "Other" = c("AsbShng", "AsphShn", "Brk Cmn", "BrkFace", "CBlock", "ImStucc", "Other", "Stone", "Stucco", "Wd Shng"))
+  factors$MasVnrType <- fct_collapse(factors$MasVnrType, "Other" = c("BrkCmn", "NONE"))
+  factors$Foundation <- fct_collapse(factors$Foundation, "Other" = c("Slab", "Stone", "Wood"))
+  factors$BsmtExposure <- fct_collapse(factors$BsmtExposure, "NA" = "NONE")
+  factors$BsmtFinType1 <- fct_collapse(factors$BsmtFinType1, "NA" = "NONE")
+  factors$BsmtFinType2 <- fct_collapse(factors$BsmtFinType2, "Other" = c("ALQ", "BLQ", "GLQ", "LwQ"), "NA" = "NONE")
+  factors$GarageType <- fct_collapse(factors$GarageType, "Other" = c("2Types", "Basment", "CarPort"))
+  factors$SaleCondition <- fct_collapse(factors$SaleCondition, "Other" = c("AdjLand", "Alloca", "Family"))
+  factors$SaleType <- fct_collapse(factors$SaleType, "Other" = c("COD", "Con", "ConLD", "ConLI", "ConLw", "CWD", "Oth", "NONE", NA, "NA"))
+  factors$Fence <- fct_collapse(factors$Fence, "Good" = c("GdPrv", "GdWo"), "Poor" = c("MnPrv", "MnWw"))
+  
+  return(factors)
+}
+```
+
+Now that we have our helper methods defined, we will create the main method for cleaning our data. We'll throw out columns like street, ID, Condition1 and Condition2, MiscFeature, and the pool columns, among others. We then clean up our categorical data into factors using the onehot() function. This transforms each of the categorical variables into individual binary variables across each of their categories, expanding our initial variable count of (?) to (?). 
+
+```{r}
+#### CLEANING DATA ####
+cleanData <- function(data) {
+    # Remove select columns
+    new <- data %>%
+        mutate(isPool = ifelse(PoolArea > 0, 1, 0),) %>%
+        select(-c(Street, Alley, Id, MSSubClass, Utilities, LandSlope,
+            Condition1, Condition2, RoofMatl, Heating, Electrical,
+            GarageYrBlt, PoolArea, PoolQC, MiscFeature))
+  
+    #Replace NA values in numeric columns to 0
+    non_factors <- new %>% dplyr::select(where(is.numeric)) %>% replace_na(0)
+  
+    #Replace NA values in non-numeric columns to "NONE"
+    factors <- collapseFactors(new %>% dplyr::select(!where(is.numeric)) %>%
+        replace_na("NONE") %>% mutate_if(is.character, as.factor))
+    
+    # Look at counts of factors, just for fun
+    inspectFactors(factors)
+    
+    # OHE values into a big freaking dataframe
+    factors <- one_hot(as.data.table(factors))
+  
+    # Combine columns
+    combined <- cbind(non_factors, factors)
+  
+    return(combined)
+}
+```
+
+In the end, we removed (?) categorical variables based on the distribution of observations across their categories. If a categorical variable had over 90% (?) of its observations in a single category, we made the decision to remove it from our analysis, as it would not provide any valuable additional information for SalePrice prediction. Next, we must split our testing and training data into our x and y values.
+
+```{r}
+#### CREATE TESTING, TRAINING DATA ####
+train <- cleanData(train)
+train_y <- train$SalePrice
+train_x <- data.matrix(train %>% select(-SalePrice))
+
+test <- cleanData(test)
+test_y <- test$SalePrice
+test_x <- data.matrix(test %>% select(-SalePrice))
+```
+
+#### MODELING ####
+
+The LASSO model, standing for least absolute selection and shrinkage operator, is a constricted version of the Ordinary Least Squares model for the purpose of variable selection. This model uses a lambda parameter, of which can be selected through cross-validation, to constrict the sum of the absolute variables of each of the model coefficients. Due to the nature of the constriction of the model coefficients involving the absolute variable, the LASSO model will force some of the coefficients to zero exactly, completely removing them from the model, while shrinking the rest.
+
+Our intuition is that a LASSO model might be appropriate. By using one-hot encoding to transform our factor variables into binary variables, we've expanded our predictors greatly. Many of these are likely not going to have an effect in our model. By using LASSO, we get the benefits of variable selection because the values will be set to zero. This is more readable than ridge regression, which sets them close to zero. It also offers more interpretability than Principle Components Regression (PCR). We will test all of these methods in the following steps and use the model with the lowest MSE.
+
+Our mathematical model is:
+
+### MATHEMATICAL MODEL HERE ###
+
+We fit the LASSO model using cross-validation to identify the optimal $\lambda$ value. Then, we predict our new home prices using the testing data and compute an $R^2$ value and our residual mean squared error.
+```{r}
+#### MODEL FITTING: LASSO ####
+# Check to see if the columns are the same in both test and train
+setdiff(colnames(test), colnames(train))
+setdiff(colnames(train), colnames(test))
+
+# Perform CV to find optimal lambda value for LASSO
+cv_model <- cv.glmnet(train_x, train_y, alpha = 1)
+best_lambda <- cv_model$lambda.min
+best_lambda
+plot(cv_model)
+
+# Recreate model with optimal lambda value
+best_model <- glmnet(train_x, train_y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+
+#### MODEL VALIDATION ####
+# Create predictions
+y_predicted <- predict(best_model, s = best_lambda, newx = test_x)
+
+# Find R^2 value
+sst <- sum((test_y - mean(test_y))^2)
+sse <- sum((y_predicted - test_y)^2)
+rsq <- 1 - sse / sst
+rmse <- sqrt(mean((y_predicted - test_y)^2))
+
+print(paste0("R^2: ", as.character(rsq)))
+print(paste0("RMSE: ", as.character(rmse)))
+```
+
+We also fit a ridge regression model using cross-validation to identify the optimal $\lambda$ value. Then, we predict our new home prices using the testing data and compute an $R^2$ value and our residual mean squared error.
+
+```{r}
+#### MODEL FITTING: RIDGE ####
+# Check to see if the columns are the same in both test and train
+setdiff(colnames(test), colnames(train))
+setdiff(colnames(train), colnames(test))
+
+# Perform CV to find optimal lambda value for LASSO
+cv_model <- cv.glmnet(train_x, train_y, alpha = 1)
+best_lambda <- cv_model$lambda.min
+best_lambda
+plot(cv_model)
+
+# Recreate model with optimal lambda value
+best_model <- glmnet(train_x, train_y, alpha = 0, lambda = best_lambda)
+coef(best_model)
+
+#### MODEL VALIDATION ####
+# Create predictions
+y_predicted <- predict(best_model, s = best_lambda, newx = test_x)
+
+# Find R^2 value
+sst <- sum((test_y - mean(test_y))^2)
+sse <- sum((y_predicted - test_y)^2)
+rsq <- 1 - sse / sst
+rmse <- sqrt(mean((y_predicted - test_y)^2))
+
+print(paste0("R^2: ", as.character(rsq)))
+print(paste0("RMSE: ", as.character(rmse)))
+```
+
+```{r}
+#### MODEL FITTING: PCR ####
+require(pls)
+pcr_model <- pcr(train_y ~ train_x, scale = TRUE, validation = "CV", ncomp=10)
+
+validationplot(pcr_model,val.type="MSEP")
+
+y_predicted <- predict(pcr_model, newx = test_x, ncomp = 8)
+
+# Find R^2 value
+sst <- sum((test_y - mean(test_y))^2)
+sse <- sum((y_predicted - test_y)^2)
+rsq <- 1 - sse / sst
+rmse <- sqrt(mean((y_predicted - test_y)^2))
+
+print(paste0("R^2: ", as.character(rsq)))
+print(paste0("RMSE: ", as.character(rmse)))
+```
+
+Finally, PLS:
+
+```{r}
+#### MODEL FITTING: PLS ####
+require(pls)
+pls_model <- plsr(train_y ~ train_x, scale = TRUE, validation = "CV")
+validationplot(pls_model,val.type="RMSEP")
+summary(pls_model)
+
+pls_model <- plsr(train_y ~ train_x, scale = TRUE, ncomp=10)
+y_predicted <- predict(pls_model, newx = test_x)
+
+# Find R^2 value
+sst <- sum((test_y - mean(test_y))^2)
+sse <- sum((y_predicted - test_y)^2)
+rsq <- 1 - sse / sst
+rmse <- sqrt(mean((y_predicted - test_y)^2))
+
+print(paste0("R^2: ", as.character(rsq)))
+print(paste0("RMSE: ", as.character(rmse)))
+```
